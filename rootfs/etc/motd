@@ -4,7 +4,7 @@
  | |___| | (_| | |_| | (_| |  __/ |_| |___) |
   \____|_|\__,_|\__,_|\__,_|\___|\___/|____/ [0m
 
-Welcome to ClaudeOS 1.0!
+Welcome to ClaudeOS 1.1!
   [93mhelp[0m        list commands          [93mgui[0m / [93mF12[0m   graphical desktop
   [93mls /bin[0m     list programs          [93mhello[0m       run a user program
   [93mcat /docs/readme.txt[0m               [93mshutdown[0m    power off

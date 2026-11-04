@@ -10,16 +10,11 @@
 #include "../include/string.h"
 #include "../include/kprintf.h"
 
-static int cascade;
-static void next_pos(int *x, int *y) {
-    *x = 130 + cascade * 28;
-    *y = 30 + cascade * 24;
-    cascade = (cascade + 1) % 6;
-}
-
 /* ===== Terminal: a termbuf + tty + its own shell task ====================== */
 #define TERM_COLS 80
 #define TERM_ROWS 25
+#define TERM_PX   12
+#define TERM_PY   10
 
 static void term_hook_cell(termbuf_t *t, int x, int y) { UNUSED(t); UNUSED(x); UNUSED(y); gui_invalidate(); }
 static void term_hook_any(termbuf_t *t) { UNUSED(t); gui_invalidate(); }
@@ -43,18 +38,21 @@ void gui_terminal_release(tty_t *tty) {      /* called by the exiting shell */
 
 static void term_paint(window_t *w, int cx, int cy) {
     tty_t *tty = w->data;
+    gfx_fill(cx, cy, w->w, w->h - TITLE_H, vga_palette[0]);
     if (!tty) return;
     termbuf_t *tb = tty->tb;
     for (int y = 0; y < tb->rows; y++)
         for (int x = 0; x < tb->cols; x++) {
             uint16_t v = tb->cells[y * tb->cols + x];
             uint8_t ch = v & 0xFF, attr = v >> 8;
-            if (ch == ' ' && !(attr >> 4)) continue;          /* background already black */
-            gfx_char(cx + 2 + x * FONT_W, cy + 2 + y * FONT_H, (char)ch,
+            if (ch == ' ' && !(attr >> 4)) continue;          /* background already drawn */
+            gfx_char(cx + TERM_PX + x * FONT_W, cy + TERM_PY + y * FONT_H, (char)ch,
                      vga_palette[attr & 15], vga_palette[attr >> 4], false);
         }
-    if (!tty->hangup)
-        gfx_fill(cx + 2 + tb->cx * FONT_W, cy + 2 + tb->cy * FONT_H + FONT_H - 4, FONT_W, 3, 0xC0C0C0);
+    if (tty->hangup) return;
+    int px = cx + TERM_PX + tb->cx * FONT_W, py = cy + TERM_PY + tb->cy * FONT_H;
+    if (!gui_is_focused(w)) gfx_rect(px, py, FONT_W, FONT_H, vga_palette[8]);
+    else if (gui_blink_on()) gfx_fill(px, py + FONT_H - 3, FONT_W, 3, gui_accent());
 }
 
 static void term_key(window_t *w, int k) { if (w->data) tty_input(w->data, k); }
@@ -85,11 +83,9 @@ void app_terminal(void) {
     termbuf_init(tb, TERM_COLS, TERM_ROWS, cells);
     tty_init(tty, tb);
     tty->refs = 2;
-    int x, y;
-    next_pos(&x, &y);
-    window_t *w = gui_window_create("Terminal", x, y, TERM_COLS * FONT_W + 4, TERM_ROWS * FONT_H + 4);
+    window_t *w = gui_window_create(APP_TERMINAL, "Terminal", -1, -1,
+                                    TERM_COLS * FONT_W + 2 * TERM_PX, TERM_ROWS * FONT_H + 2 * TERM_PY);
     if (!w) { kfree(tty); kfree(tb); kfree(cells); return; }
-    w->bg = 0x000000;
     w->data = tty;
     w->paint = term_paint;
     w->on_key = term_key;
@@ -122,6 +118,12 @@ static void calc_press(calc_t *c, char k) {
     if (k >= '0' && k <= '9') {
         if (c->fresh) { c->cur = 0; c->fresh = false; }
         if (c->cur < 100000000 && c->cur > -100000000) c->cur = c->cur * 10 + (c->cur < 0 ? -(k - '0') : k - '0');
+    } else if (k == '<') {
+        if (!c->fresh) c->cur /= 10;
+    } else if (k == 'N') {
+        c->cur = -c->cur;
+    } else if (k == '%') {
+        c->cur = c->op ? c->acc / 100 * c->cur + c->acc % 100 * c->cur / 100 : c->cur / 100;
     } else if (k == '=') {
         if (c->op) { c->acc = calc_apply(c, c->acc, c->op, c->cur); c->op = 0; }
         c->cur = c->acc;
@@ -136,43 +138,56 @@ static void calc_press(calc_t *c, char k) {
 
 static void calc_paint(window_t *w, int cx, int cy) {
     calc_t *c = w->data;
-    gfx_fill(cx + 8, cy + 8, 200, 32, 0xE8F4E0);
-    gfx_bevel(cx + 8, cy + 8, 200, 32, false);
+    const theme_t *th = gui_theme();
+    int x = cx + 12, y = cy + 12, ww = w->w - 24;
+    gfx_round_fill(x, y, ww, 84, 12, th->card);
     char buf[24];
+    if (c->op) {
+        snprintf(buf, sizeof(buf), "%d %c", c->acc, c->op);
+        gfx_text(x + ww - 14 - (int)strlen(buf) * FONT_W, y + 10, buf, th->dim);
+    }
     if (c->error) strlcpy(buf, "Error", sizeof(buf));
     else snprintf(buf, sizeof(buf), "%d", c->cur);
-    gfx_text(cx + 200 - (int)strlen(buf) * FONT_W, cy + 16, buf, 0x000000);
-    if (c->op) gfx_char(cx + 14, cy + 16, c->op, 0x808080, 0, true);
+    int len = strlen(buf), scale = len > 12 ? 1 : 2;
+    gfx_text_scaled(x + ww - 14 - len * FONT_W * scale, y + 74 - FONT_H * scale, buf,
+                    c->error ? 0xEF5350 : th->text, scale);
 }
 
-static void calc_click(window_t *w, widget_t *wd) { calc_press(w->data, wd->text[0]); }
+static void calc_click(window_t *w, widget_t *wd) { calc_press(w->data, (char)wd->tag); }
 
 static void calc_key(window_t *w, int k) {
     if (k == '\n') k = '=';
-    if (k == '\b' || k == 'c' || k == 27) k = 'C';
-    if ((k >= '0' && k <= '9') || (k && strchr("+-*/=C", k))) calc_press(w->data, (char)k);
+    if (k == '\b') k = '<';
+    if (k == 'c' || k == 27) k = 'C';
+    if ((k >= '0' && k <= '9') || (k && k < 128 && strchr("+-*/=C<%", k))) calc_press(w->data, (char)k);
 }
 
 void app_calculator(void) {
-    int x, y;
-    next_pos(&x, &y);
-    window_t *w = gui_window_create("Calculator", x, y, 216, 228);
+    window_t *w = gui_window_create(APP_CALC, "Calculator", -1, -1, 260, 392);
     if (!w) return;
     w->data = kzalloc(sizeof(calc_t));
     w->free_data = true;
     w->paint = calc_paint;
     w->on_key = calc_key;
-    static const char *keys = "789/456*123-C0=+";
-    for (int i = 0; i < 16; i++) {
-        char label[2] = { keys[i], 0 };
-        widget_t *b = gui_add_widget(w, W_BUTTON, 8 + (i % 4) * 51, 50 + (i / 4) * 43, 47, 38, label);
+    static const struct { const char *label; char key; int style; } keys[20] = {
+        { "C", 'C', S_DANGER }, { "+/-", 'N', S_NORMAL }, { "%", '%', S_NORMAL }, { "/", '/', S_ACCENT },
+        { "7", '7', 0 }, { "8", '8', 0 }, { "9", '9', 0 }, { "*", '*', S_ACCENT },
+        { "4", '4', 0 }, { "5", '5', 0 }, { "6", '6', 0 }, { "-", '-', S_ACCENT },
+        { "1", '1', 0 }, { "2", '2', 0 }, { "3", '3', 0 }, { "+", '+', S_ACCENT },
+        { "0", '0', 0 }, { NULL, 0, 0 }, { "<", '<', S_NORMAL }, { "=", '=', S_PRIMARY },
+    };
+    for (int i = 0; i < 20; i++) {
+        if (!keys[i].label) continue;
+        int col = i % 4, row = i / 4, bw = keys[i].key == '0' ? 114 : 54;
+        widget_t *b = gui_add_widget(w, W_BUTTON, 12 + col * 60, 108 + row * 56, bw, 48, keys[i].label);
         b->on_click = calc_click;
-        if (strchr("/*-+=", keys[i])) b->color = 0xD8D8E8;
+        b->tag = keys[i].key;
+        b->style = keys[i].style;
     }
 }
 
-/* ===== Widgets demo: labels, text boxes, buttons, file save/load ========== */
-typedef struct { widget_t *name, *result, *count, *note, *status; int clicks; } demo_t;
+/* ===== Widgets demo ========================================================== */
+typedef struct { widget_t *name, *result, *count, *volume, *note, *status; int clicks; } demo_t;
 
 static void demo_greet(window_t *w, widget_t *wd) {
     UNUSED(wd);
@@ -188,97 +203,199 @@ static void demo_click(window_t *w, widget_t *wd) {
     snprintf(d->count->text, sizeof(d->count->text), "Clicked %d time%s", d->clicks, d->clicks == 1 ? "" : "s");
 }
 
+static void demo_notify(window_t *w, widget_t *wd) {
+    UNUSED(w);
+    gui_toast(wd->value ? "Notifications enabled" : "Notifications disabled");
+}
+
+static void demo_volume(window_t *w, widget_t *wd) {
+    demo_t *d = w->data;
+    snprintf(d->volume->text, sizeof(d->volume->text), "%d%%", wd->value);
+}
+
+static void demo_size(window_t *w, widget_t *wd) {
+    UNUSED(w);
+    static const char *names[3] = { "Small", "Medium", "Large" };
+    char buf[48];
+    snprintf(buf, sizeof(buf), "Size set to %s", names[wd->value % 3]);
+    gui_toast(buf);
+}
+
 static void demo_save(window_t *w, widget_t *wd) {
     UNUSED(wd);
     demo_t *d = w->data;
+    char buf[96];
     int r = fs_write("/note.txt", d->note->text, strlen(d->note->text), false);
-    if (r < 0) snprintf(d->status->text, sizeof(d->status->text), "Save failed: %s", fs_strerror(r));
-    else snprintf(d->status->text, sizeof(d->status->text), "Saved %d bytes to /note.txt (try: cat /note.txt)", r);
+    if (r < 0) snprintf(buf, sizeof(buf), "Save failed: %s", fs_strerror(r));
+    else snprintf(buf, sizeof(buf), "Saved %d bytes to /note.txt", r);
+    gui_toast(buf);
 }
 
 static void demo_load(window_t *w, widget_t *wd) {
     UNUSED(wd);
     demo_t *d = w->data;
+    char buf[96];
     int r = fs_read("/note.txt", 0, d->note->text, sizeof(d->note->text) - 1);
-    if (r < 0) { snprintf(d->status->text, sizeof(d->status->text), "Load failed: %s", fs_strerror(r)); return; }
+    if (r < 0) { snprintf(buf, sizeof(buf), "Load failed: %s", fs_strerror(r)); gui_toast(buf); return; }
     d->note->text[r] = 0;
     for (int i = 0; i < r; i++) if (d->note->text[i] == '\n') d->note->text[i] = ' ';
     d->note->cursor = r;
-    snprintf(d->status->text, sizeof(d->status->text), "Loaded %d bytes from /note.txt", r);
+    snprintf(buf, sizeof(buf), "Loaded %d bytes from /note.txt", r);
+    gui_toast(buf);
 }
 
 void app_widgets_demo(void) {
-    int x, y;
-    next_pos(&x, &y);
-    window_t *w = gui_window_create("Widgets Demo", x, y, 420, 230);
+    window_t *w = gui_window_create(APP_WIDGETS, "Widgets Demo", -1, -1, 470, 412);
     if (!w) return;
     demo_t *d = kzalloc(sizeof(demo_t));
     w->data = d;
     w->free_data = true;
-    gui_add_widget(w, W_LABEL, 10, 10, 90, 22, "Your name:");
-    d->name = gui_add_widget(w, W_TEXTBOX, 100, 10, 210, 22, "");
+    gui_add_widget(w, W_LABEL, 16, 12, 200, 20, "Text input")->style = S_HEADING;
+    d->name = gui_add_widget(w, W_TEXTBOX, 16, 38, 300, 34, "");
+    strlcpy(d->name->placeholder, "Type your name...", sizeof(d->name->placeholder));
     d->name->on_enter = demo_greet;
-    gui_add_widget(w, W_BUTTON, 320, 8, 90, 26, "Greet")->on_click = demo_greet;
-    d->result = gui_add_widget(w, W_LABEL, 10, 40, 400, 20, "Type a name and press Enter or Greet.");
-    d->result->color = 0x000080;
-    gui_add_widget(w, W_BUTTON, 10, 72, 100, 26, "Click me!")->on_click = demo_click;
-    d->count = gui_add_widget(w, W_LABEL, 122, 74, 200, 22, "Clicked 0 times");
-    gui_add_widget(w, W_LABEL, 10, 120, 50, 22, "Note:");
-    d->note = gui_add_widget(w, W_TEXTBOX, 60, 120, 250, 22, "");
-    gui_add_widget(w, W_BUTTON, 320, 118, 90, 26, "Save")->on_click = demo_save;
-    gui_add_widget(w, W_BUTTON, 320, 150, 90, 26, "Load")->on_click = demo_load;
-    d->status = gui_add_widget(w, W_LABEL, 10, 196, 400, 20, "Tab moves focus between widgets.");
-    d->status->color = 0x404040;
+    widget_t *b = gui_add_widget(w, W_BUTTON, 326, 38, 128, 34, "Greet");
+    b->style = S_PRIMARY;
+    b->on_click = demo_greet;
+    d->result = gui_add_widget(w, W_LABEL, 16, 80, 440, 20, "Type a name and press Enter.");
+    d->result->style = S_ACCENT;
+
+    gui_add_widget(w, W_LABEL, 16, 114, 200, 20, "Controls")->style = S_HEADING;
+    gui_add_widget(w, W_BUTTON, 16, 140, 120, 34, "Click me")->on_click = demo_click;
+    d->count = gui_add_widget(w, W_LABEL, 150, 140, 200, 34, "Clicked 0 times");
+    d->count->style = S_DIM;
+    gui_add_widget(w, W_LABEL, 16, 186, 200, 26, "Notifications");
+    widget_t *t = gui_add_widget(w, W_TOGGLE, 410, 187, 44, 24, "");
+    t->value = 1; t->anim = 1000;
+    t->on_change = demo_notify;
+    gui_add_widget(w, W_LABEL, 16, 224, 100, 26, "Volume");
+    widget_t *s = gui_add_widget(w, W_SLIDER, 120, 224, 280, 26, "");
+    s->value = 60;
+    s->on_change = demo_volume;
+    d->volume = gui_add_widget(w, W_LABEL, 412, 224, 50, 26, "60%");
+    d->volume->style = S_DIM;
+    gui_add_widget(w, W_LABEL, 16, 262, 100, 32, "Size");
+    widget_t *c = gui_add_widget(w, W_CHOICE, 120, 262, 334, 32, "Small|Medium|Large");
+    c->value = 1; c->anim = 1000;
+    c->on_change = demo_size;
+
+    gui_add_widget(w, W_LABEL, 16, 310, 200, 20, "Files")->style = S_HEADING;
+    d->note = gui_add_widget(w, W_TEXTBOX, 16, 336, 262, 34, "");
+    strlcpy(d->note->placeholder, "Write a note...", sizeof(d->note->placeholder));
+    b = gui_add_widget(w, W_BUTTON, 288, 336, 80, 34, "Save");
+    b->style = S_PRIMARY;
+    b->on_click = demo_save;
+    gui_add_widget(w, W_BUTTON, 376, 336, 78, 34, "Load")->on_click = demo_load;
+    d->status = gui_add_widget(w, W_LABEL, 16, 380, 440, 20, "Tab moves focus, Space/arrows change controls.");
+    d->status->style = S_DIM;
 }
 
 /* ===== System monitor ======================================================= */
-static void bar(int x, int y, int w, uint32_t used, uint32_t total, uint32_t color) {
-    gfx_fill(x, y, w, 14, 0xFFFFFF);
-    gfx_bevel(x, y, w, 14, false);
-    uint32_t u = used >> 8, t = total >> 8;          /* scale down: no 64-bit division */
-    int fill = t ? (int)(u * (uint32_t)(w - 4) / t) : 0;
-    gfx_fill(x + 2, y + 2, fill, 10, color);
+#define CPU_SAMPLES 60
+typedef struct { uint32_t last_tick, last_idle; int hist[CPU_SAMPLES]; int n; } sysmon_t;
+
+static void card(int x, int y, int w, int h, const char *title) {
+    const theme_t *th = gui_theme();
+    gfx_round_fill(x, y, w, h, 12, th->card);
+    if (title) gfx_text(x + 14, y + 10, title, th->dim);
+}
+
+static void bar(int x, int y, int w, uint32_t used, uint32_t total) {
+    uint32_t u = used >> 8, t = total >> 8;                 /* no 64-bit division */
+    int fill = t ? (int)(u * (uint32_t)w / t) : 0;
+    gfx_round_fill(x, y, w, 8, 4, gui_theme()->button_hover);
+    if (fill > 0) gfx_round_fill(x, y, MAX(fill, 8), 8, 4, gui_accent());
 }
 
 static void sysmon_paint(window_t *w, int cx, int cy) {
-    UNUSED(w);
+    sysmon_t *m = w->data;
+    const theme_t *th = gui_theme();
+    uint32_t acc = gui_accent();
     char buf[96];
+    int x = cx + 16, W = w->w - 32;
+
+    /* summary cards */
+    int cw = (W - 24) / 3, cpu = m->n ? m->hist[m->n - 1] : 0;
     uint32_t s = timer_ticks() / 1000;
-    snprintf(buf, sizeof(buf), "Uptime: %u:%02u:%02u", s / 3600, (s / 60) % 60, s % 60);
-    gfx_text(cx + 10, cy + 8, buf, 0);
     uint32_t tot = pmm_total_frames() * 4, fr = pmm_free_frames() * 4;
-    snprintf(buf, sizeof(buf), "RAM:  %u / %u KB", tot - fr, tot);
-    gfx_text(cx + 10, cy + 32, buf, 0);
-    bar(cx + 220, cy + 33, 180, tot - fr, tot, 0x3060C0);
+    int ntasks = 0;
+    for (int i = 0; i < MAX_TASKS; i++) if (task_by_index(i)->state != T_UNUSED) ntasks++;
+    const char *titles[3] = { "Uptime", "CPU", "Tasks" };
+    char vals[3][16];
+    snprintf(vals[0], 16, "%u:%02u:%02u", s / 3600, (s / 60) % 60, s % 60);
+    snprintf(vals[1], 16, "%d%%", cpu);
+    snprintf(vals[2], 16, "%d", ntasks);
+    for (int i = 0; i < 3; i++) {
+        card(x + i * (cw + 12), cy + 14, cw, 74, titles[i]);
+        gfx_text_scaled(x + i * (cw + 12) + 14, cy + 44, vals[i], i == 1 ? acc : th->text, 2);
+    }
+
+    /* CPU history graph */
+    int gy = cy + 102;
+    card(x, gy, W, 140, "CPU usage, last 30 s");
+    int ax = x + 14, ay = gy + 34, aw = W - 28, ah = 92;
+    for (int i = 0; i <= 4; i++) gfx_fill(ax, ay + ah * i / 4, aw, 1, gfx_mix(th->card, th->dim, 50));
+    for (int col = 0; col < aw && m->n > 1; col++) {
+        int pos = col * (CPU_SAMPLES - 1) * 16 / aw;              /* 1/16 sample precision */
+        int i0 = pos / 16, frac = pos % 16;
+        int start = CPU_SAMPLES - m->n;                           /* newest samples on the right */
+        if (i0 < start) continue;
+        int v0 = m->hist[i0 - start], v1 = i0 + 1 - start < m->n ? m->hist[i0 + 1 - start] : v0;
+        int v = (v0 * (16 - frac) + v1 * frac) / 16, hgt = v * ah / 100;
+        gfx_blend(ax + col, ay + ah - hgt, 1, hgt, acc, 70);
+        gfx_fill(ax + col, ay + ah - hgt - 1, 1, 2, acc);
+    }
+
+    /* memory */
+    int my = gy + 154;
+    card(x, my, W, 74, NULL);
     uint32_t ht, hu, hb;
     heap_stats(&ht, &hu, &hb);
-    snprintf(buf, sizeof(buf), "Heap: %u / %u KB", hu / 1024, ht / 1024);
-    gfx_text(cx + 10, cy + 52, buf, 0);
-    bar(cx + 220, cy + 53, 180, hu, ht, 0x30A050);
-    gfx_fill(cx + 8, cy + 78, 396, 20, 0x0A246A);
-    gfx_text(cx + 12, cy + 80, "PID  STATE     CPU(ms)  TYPE    NAME", 0xFFFFFF);
+    int half = (W - 42) / 2;
+    snprintf(buf, sizeof(buf), "RAM  %u / %u MB", (tot - fr) / 1024, tot / 1024);
+    gfx_text(x + 14, my + 14, buf, th->text);
+    bar(x + 14, my + 44, half, tot - fr, tot);
+    snprintf(buf, sizeof(buf), "Heap  %u / %u KB", hu / 1024, ht / 1024);
+    gfx_text(x + 28 + half, my + 14, buf, th->text);
+    bar(x + 28 + half, my + 44, half, hu, ht);
+
+    /* task list */
+    int ty = my + 88;
+    card(x, ty, W, w->h - TITLE_H - (ty - cy) - 14, NULL);
+    gfx_text(x + 14, ty + 10, "PID  STATE      CPU(ms)  TYPE    NAME", th->dim);
     int row = 0;
-    for (int i = 0; i < MAX_TASKS; i++) {
+    for (int i = 0; i < MAX_TASKS && row < 8; i++) {
         task_t *t = task_by_index(i);
         if (t->state == T_UNUSED) continue;
-        snprintf(buf, sizeof(buf), "%3d  %-8s %8u  %-6s  %s", t->pid, task_state_name(t->state),
+        int ry = ty + 32 + row * 20;
+        if (row % 2 == 0) gfx_round_blend(x + 6, ry - 2, W - 12, 20, 6, th->hover, 120);
+        snprintf(buf, sizeof(buf), "%3d  %-9s %8u  %-6s  %s", t->pid, task_state_name(t->state),
                  t->cpu_ticks, t->is_user ? "user" : "kernel", t->name);
-        gfx_text(cx + 12, cy + 102 + row * 18, buf, t->is_user ? 0x804000 : 0x000000);
+        gfx_text(x + 14, ry, buf, t->is_user ? acc : th->text);
         row++;
     }
 }
 
 static void sysmon_tick(window_t *w) {
-    uint32_t *last = w->data;
-    if (timer_ticks() - *last >= 500) { *last = timer_ticks(); gui_invalidate(); }
+    sysmon_t *m = w->data;
+    uint32_t nowt = timer_ticks(), idle = task_by_index(0)->cpu_ticks;
+    if (nowt - m->last_tick < 500) return;
+    if (m->last_tick) {
+        uint32_t el = nowt - m->last_tick, di = idle - m->last_idle;
+        int usage = 100 - (int)(di * 100 / (el ? el : 1));
+        usage = MAX(0, MIN(100, usage));
+        if (m->n == CPU_SAMPLES) { memmove(m->hist, m->hist + 1, (CPU_SAMPLES - 1) * sizeof(int)); m->n--; }
+        m->hist[m->n++] = usage;
+    }
+    m->last_tick = nowt;
+    m->last_idle = idle;
+    gui_invalidate();
 }
 
 void app_sysmon(void) {
-    int x, y;
-    next_pos(&x, &y);
-    window_t *w = gui_window_create("System Monitor", x, y, 412, 360);
+    window_t *w = gui_window_create(APP_MONITOR, "System Monitor", -1, -1, 500, 528);
     if (!w) return;
-    w->data = kzalloc(sizeof(uint32_t));
+    w->data = kzalloc(sizeof(sysmon_t));
     w->free_data = true;
     w->paint = sysmon_paint;
     w->on_tick = sysmon_tick;
@@ -288,34 +405,35 @@ void app_sysmon(void) {
 static void about_ok(window_t *w, widget_t *wd) { UNUSED(wd); gui_window_close(w); }
 
 static void about_paint(window_t *w, int cx, int cy) {
-    UNUSED(w);
+    const theme_t *th = gui_theme();
+    uint32_t acc = gui_accent();
+    int mid = cx + w->w / 2;
+    gfx_round_gradient(mid - 40, cy + 22, 80, 80, 22, gfx_mix(acc, 0xFFFFFF, 70), acc);
+    gui_draw_logo(mid - 3, cy + 65, 22, 0xFFFFFF);
+    gfx_text_scaled(mid - 64, cy + 116, "ClaudeOS", th->text, 2);
     static const char *lines[] = {
-        "ClaudeOS 1.0 - a hobby operating system for i386",
+        "Version 1.1 for i386",
         "",
-        "Kernel: C + NASM, Multiboot (GRUB), paging,",
-        "preemptive multitasking, ring-3 ELF programs.",
-        "Drivers: PS/2 keyboard & mouse, PIT, RTC, ATA,",
-        "VESA framebuffer, ACPI power-off.",
-        "File system: FAT12/FAT16 (read/write).",
-        "",
-        "Font: Terminus (SIL Open Font License).",
+        "C + NASM kernel, preemptive multitasking,",
+        "FAT12/16, ring-3 programs and this desktop.",
+        "Font: Terminus (SIL Open Font License)",
     };
-    gfx_fill(cx + 10, cy + 10, 48, 48, 0x0A246A);
-    gfx_fill(cx + 16, cy + 16, 16, 16, 0xE04040); gfx_fill(cx + 36, cy + 16, 16, 16, 0x40C040);
-    gfx_fill(cx + 16, cy + 36, 16, 16, 0x4060E0); gfx_fill(cx + 36, cy + 36, 16, 16, 0xE0C040);
     for (unsigned i = 0; i < sizeof(lines) / sizeof(lines[0]); i++)
-        gfx_text(cx + 70, cy + 10 + i * 18, lines[i], i == 0 ? 0x0A246A : 0);
+        gfx_text(mid - (int)strlen(lines[i]) * FONT_W / 2, cy + 156 + i * 18, lines[i], i == 0 ? acc : th->dim);
 }
 
 void app_about(void) {
-    window_t *w = gui_window_create("About ClaudeOS", gfx_width / 2 - 230, gfx_height / 2 - 140, 460, 220);
+    window_t *w = gui_window_create(APP_ABOUT, "About ClaudeOS", gfx_width / 2 - 220, gfx_height / 2 - 200, 440, 300);
     if (!w) return;
     w->paint = about_paint;
-    gui_add_widget(w, W_BUTTON, 350, 182, 96, 28, "OK")->on_click = about_ok;
+    widget_t *b = gui_add_widget(w, W_BUTTON, 170, 254, 100, 34, "OK");
+    b->style = S_PRIMARY;
+    b->on_click = about_ok;
 }
 
 /* ===== File browser ========================================================= */
 #define FB_MAX 64
+#define FB_ROW 24
 typedef struct {
     char cwd[128];
     fs_entry_t ent[FB_MAX];
@@ -345,11 +463,16 @@ static void files_up(window_t *w, widget_t *wd) {
 
 static void files_refresh(window_t *w, widget_t *wd) { UNUSED(wd); files_load(w->data); }
 
+static int files_row_at(files_t *f, int x, int y) {
+    if (x < 22 || x > 280 || y < 62) return -1;
+    int i = (y - 62) / FB_ROW;
+    return i < f->n && i < 13 ? i : -1;
+}
+
 static void files_mouse(window_t *w, int x, int y) {
     files_t *f = w->data;
-    if (x < 4 || x > 224 || y < 34) return;
-    int i = (y - 36) / 18;
-    if (i < 0 || i >= f->n) return;
+    int i = files_row_at(f, x, y);
+    if (i < 0) return;
     char p[128];
     path_normalize(f->cwd, f->ent[i].name, p, sizeof(p));
     if (f->ent[i].is_dir) { strlcpy(f->cwd, p, sizeof(f->cwd)); files_load(f); return; }
@@ -364,39 +487,49 @@ static void files_mouse(window_t *w, int x, int y) {
 
 static void files_paint(window_t *w, int cx, int cy) {
     files_t *f = w->data;
-    gfx_fill(cx + 4, cy + 34, 220, 300, 0xFFFFFF);
-    gfx_bevel(cx + 4, cy + 34, 220, 300, false);
-    for (int i = 0; i < f->n && i < 16; i++) {
-        int y = cy + 36 + i * 18;
-        if (i == f->sel) gfx_fill(cx + 6, y, 216, 18, 0x0A246A);
-        uint32_t fg = i == f->sel ? 0xFFFFFF : 0;
-        if (f->ent[i].is_dir) { gfx_fill(cx + 10, y + 4, 12, 10, 0xE0B040); gfx_fill(cx + 10, y + 2, 6, 3, 0xE0B040); }
-        else { gfx_fill(cx + 11, y + 2, 10, 13, 0xFFFFFF); gfx_rect(cx + 11, y + 2, 10, 13, 0x606060); }
-        gfx_text(cx + 28, y + 1, f->ent[i].name, fg);
+    const theme_t *th = gui_theme();
+    uint32_t acc = gui_accent();
+    int mx, my, hover = -1;
+    if (gui_mouse_in_client(w, &mx, &my)) hover = files_row_at(f, mx, my);
+
+    gfx_round_fill(cx + 16, cy + 56, 270, 330, 12, th->card);
+    for (int i = 0; i < f->n && i < 13; i++) {
+        int y = cy + 62 + i * FB_ROW;
+        bool sel = i == f->sel;
+        if (sel) gfx_round_fill(cx + 22, y, 258, FB_ROW - 2, 7, acc);
+        else if (i == hover) gfx_round_fill(cx + 22, y, 258, FB_ROW - 2, 7, th->hover);
+        uint32_t fg = sel ? 0xFFFFFF : th->text;
+        if (f->ent[i].is_dir) {
+            gfx_round_fill(cx + 30, y + 5, 8, 4, 1, 0xF5B83D);
+            gfx_round_fill(cx + 30, y + 7, 16, 11, 2, 0xF5B83D);
+        } else {
+            gfx_round_fill(cx + 32, y + 4, 12, 15, 2, sel ? 0xFFFFFF : th->dim);
+            gfx_round_fill(cx + 34, y + 6, 8, 11, 1, sel ? acc : th->card);
+        }
+        gfx_text(cx + 54, y + 3, f->ent[i].name, fg);
         if (!f->ent[i].is_dir) {
             char sz[16];
             snprintf(sz, sizeof(sz), "%u", f->ent[i].size);
-            gfx_text(cx + 216 - (int)strlen(sz) * FONT_W, y + 1, sz, i == f->sel ? 0xC0C0FF : 0x808080);
+            gfx_text(cx + 272 - (int)strlen(sz) * FONT_W, y + 3, sz, sel ? 0xFFFFFF : th->dim);
         }
     }
-    int px = cx + 232, py = cy + 34, pw = 340, ph = 300;      /* preview pane */
-    gfx_fill(px, py, pw, ph, 0xFFFFF0);
-    gfx_bevel(px, py, pw, ph, false);
-    int col = 0, row = 0, cols = (pw - 8) / FONT_W, rows = (ph - 4) / FONT_H;
+
+    int px = cx + 298, py = cy + 56, pw = 326, ph = 330;      /* preview pane */
+    gfx_round_fill(px, py, pw, ph, 12, th->input);
+    gfx_round_outline(px, py, pw, ph, 12, th->input_border, 255);
+    int col = 0, row = 0, cols = (pw - 24) / FONT_W, rows = (ph - 20) / FONT_H;
     for (char *p = f->preview; *p && row < rows; p++) {
         if (*p == '\n' || col >= cols) { row++; col = 0; if (*p == '\n') continue; if (row >= rows) break; }
         if (*p == '\t' || *p == '\r') { col += *p == '\t'; continue; }
-        gfx_char(px + 4 + col * FONT_W, py + 2 + row * FONT_H, *p, 0x202020, 0, true);
+        gfx_char(px + 12 + col * FONT_W, py + 10 + row * FONT_H, *p, th->text, 0, true);
         col++;
     }
-    if (!f->preview[0]) gfx_text(px + 10, py + 10, "Click a file to preview it.", 0x808080);
-    gfx_text(cx + 6, cy + 340, f->status, 0x404040);
+    if (!f->preview[0]) gfx_text(px + 12, py + 12, "Select a file to preview it.", th->dim);
+    gfx_text(cx + 18, cy + 396, f->status, th->dim);
 }
 
 void app_files(void) {
-    int x, y;
-    next_pos(&x, &y);
-    window_t *w = gui_window_create("File Browser", x, y, 580, 360);
+    window_t *w = gui_window_create(APP_FILES, "Files", -1, -1, 640, 420);
     if (!w) return;
     files_t *f = kzalloc(sizeof(files_t));
     if (!f) { gui_window_close(w); return; }
@@ -405,9 +538,134 @@ void app_files(void) {
     w->paint = files_paint;
     w->on_mouse = files_mouse;
     strlcpy(f->cwd, "/", sizeof(f->cwd));
-    gui_add_widget(w, W_BUTTON, 4, 4, 50, 24, "Up")->on_click = files_up;
-    gui_add_widget(w, W_BUTTON, 58, 4, 76, 24, "Refresh")->on_click = files_refresh;
-    f->path = gui_add_widget(w, W_LABEL, 144, 4, 420, 24, "/");
-    f->path->color = 0x0A246A;
+    gui_add_widget(w, W_BUTTON, 16, 12, 64, 32, "Up")->on_click = files_up;
+    gui_add_widget(w, W_BUTTON, 88, 12, 90, 32, "Refresh")->on_click = files_refresh;
+    f->path = gui_add_widget(w, W_LABEL, 192, 12, 430, 32, "/");
+    f->path->style = S_HEADING;
     files_load(f);
+}
+
+/* ===== Settings ============================================================= */
+typedef struct {
+    widget_t *theme, *accent[NUM_ACCENTS], *wall[NUM_WALLPAPERS];
+    widget_t *anim, *speed, *shadows, *transl, *seconds, *mouse, *mouse_lbl;
+} settings_ui_t;
+
+static void settings_sync(settings_ui_t *u) {
+    gui_settings_t *s = &gui_settings;
+    u->theme->value = s->theme;
+    for (int i = 0; i < NUM_ACCENTS; i++) u->accent[i]->value = i == s->accent;
+    for (int i = 0; i < NUM_WALLPAPERS; i++) u->wall[i]->value = i == s->wallpaper;
+    u->anim->value = s->animations;
+    u->speed->value = s->anim_speed;
+    u->shadows->value = s->shadows;
+    u->transl->value = s->translucent;
+    u->seconds->value = s->seconds;
+    u->mouse->value = s->mouse_speed;
+    snprintf(u->mouse_lbl->text, sizeof(u->mouse_lbl->text), "%d%%", s->mouse_speed);
+}
+
+static void set_theme(window_t *w, widget_t *wd) { UNUSED(w); gui_settings.theme = wd->value; gui_settings_changed(true); }
+static void set_speed(window_t *w, widget_t *wd) { UNUSED(w); gui_settings.anim_speed = wd->value; gui_settings_changed(true); }
+
+static void set_accent(window_t *w, widget_t *wd) {
+    gui_settings.accent = wd->tag;
+    settings_sync(w->data);
+    gui_settings_changed(true);
+}
+
+static void set_wallpaper(window_t *w, widget_t *wd) {
+    gui_settings.wallpaper = wd->tag;
+    settings_sync(w->data);
+    gui_settings_changed(true);
+}
+
+static void set_flag(window_t *w, widget_t *wd) {
+    UNUSED(w);
+    bool *flags[4] = { &gui_settings.animations, &gui_settings.shadows, &gui_settings.translucent, &gui_settings.seconds };
+    *flags[wd->tag] = wd->value;
+    gui_settings_changed(true);
+}
+
+static void set_mouse(window_t *w, widget_t *wd) {          /* live while dragging */
+    settings_ui_t *u = w->data;
+    gui_settings.mouse_speed = wd->value;
+    snprintf(u->mouse_lbl->text, sizeof(u->mouse_lbl->text), "%d%%", wd->value);
+    gui_settings_changed(false);
+}
+
+static void save_mouse(window_t *w, widget_t *wd) { UNUSED(w); UNUSED(wd); gui_settings_changed(true); }
+
+static void reset_settings(window_t *w, widget_t *wd) {
+    UNUSED(wd);
+    gui_settings_defaults();
+    settings_sync(w->data);
+    gui_settings_changed(true);
+    gui_toast("Settings restored to defaults");
+}
+
+static widget_t *settings_row(window_t *w, int y, const char *label) {
+    return gui_add_widget(w, W_LABEL, 24, y, 170, 32, label);
+}
+
+static widget_t *settings_toggle(window_t *w, int y, const char *label, int tag) {
+    settings_row(w, y, label);
+    widget_t *t = gui_add_widget(w, W_TOGGLE, 452, y + 4, 44, 24, "");
+    t->tag = tag;
+    t->on_change = set_flag;
+    return t;
+}
+
+void app_settings(void) {
+    window_t *w = gui_window_create(APP_SETTINGS, "Settings", -1, -1, 520, 556);
+    if (!w) return;
+    settings_ui_t *u = kzalloc(sizeof(settings_ui_t));
+    if (!u) { gui_window_close(w); return; }
+    w->data = u;
+    w->free_data = true;
+
+    gui_add_widget(w, W_LABEL, 24, 14, 200, 20, "Appearance")->style = S_HEADING;
+    settings_row(w, 44, "Theme");
+    u->theme = gui_add_widget(w, W_CHOICE, 200, 44, 296, 32, "Dark|Light");
+    u->theme->on_change = set_theme;
+    settings_row(w, 90, "Accent color");
+    for (int i = 0; i < NUM_ACCENTS; i++) {
+        u->accent[i] = gui_add_widget(w, W_SWATCH, 200 + i * 44, 90, 32, 32, accent_names[i]);
+        u->accent[i]->color = accent_colors[i];
+        u->accent[i]->tag = i;
+        u->accent[i]->on_click = set_accent;
+    }
+    settings_row(w, 140, "Wallpaper");
+    for (int i = 0; i < NUM_WALLPAPERS; i++) {
+        u->wall[i] = gui_add_widget(w, W_SWATCH, 200 + i * 60, 138, 50, 36, wallpaper_names[i]);
+        u->wall[i]->style = S_WALLPAPER;
+        u->wall[i]->tag = i;
+        u->wall[i]->on_click = set_wallpaper;
+    }
+
+    gui_add_widget(w, W_LABEL, 24, 196, 200, 20, "Effects")->style = S_HEADING;
+    u->anim = settings_toggle(w, 224, "Animations", 0);
+    settings_row(w, 262, "Animation speed");
+    u->speed = gui_add_widget(w, W_CHOICE, 200, 262, 296, 32, "Slow|Normal|Fast");
+    u->speed->on_change = set_speed;
+    u->shadows = settings_toggle(w, 304, "Window shadows", 1);
+    u->transl = settings_toggle(w, 342, "Translucent panels", 2);
+
+    gui_add_widget(w, W_LABEL, 24, 392, 200, 20, "Desktop")->style = S_HEADING;
+    u->seconds = settings_toggle(w, 420, "Clock shows seconds", 3);
+    settings_row(w, 460, "Mouse speed");
+    u->mouse = gui_add_widget(w, W_SLIDER, 200, 462, 236, 28, "");
+    u->mouse->min = 25;
+    u->mouse->max = 300;
+    u->mouse->on_change = set_mouse;
+    u->mouse->on_click = save_mouse;
+    u->mouse_lbl = gui_add_widget(w, W_LABEL, 448, 460, 60, 32, "");
+    u->mouse_lbl->style = S_DIM;
+
+    gui_add_widget(w, W_BUTTON, 24, 508, 170, 34, "Reset to defaults")->on_click = reset_settings;
+    gui_add_widget(w, W_LABEL, 210, 508, 290, 34, "Saved automatically to /etc/gui.cfg")->style = S_DIM;
+
+    settings_sync(u);
+    for (int i = 0; i < w->nwidgets; i++) w->widgets[i]->anim = w->widgets[i]->value * 1000;  /* no intro animation */
+    w->focus = -1;
 }

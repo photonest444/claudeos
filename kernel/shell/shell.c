@@ -9,11 +9,12 @@
 #include "../include/string.h"
 #include "../include/kprintf.h"
 #include "../include/gfx.h"
+#include "../include/gui.h"
 
 #define LINE_MAX  256
 #define MAX_ARGS  16
 #define HIST_MAX  16
-#define OS_VERSION "ClaudeOS 1.0 (i386)"
+#define OS_VERSION "ClaudeOS 1.1 (i386)"
 
 typedef struct {
     tty_t *tty;
@@ -331,6 +332,22 @@ static void cmd_gui(shell_t *sh, int argc, char **argv) {
     if (display_set_mode(DISPLAY_GUI) < 0) OUT("gui: no framebuffer (booted in text mode)\n");
 }
 
+static void cmd_settings(shell_t *sh, int argc, char **argv) {
+    UNUSED(argc); UNUSED(argv);
+    if (display_set_mode(DISPLAY_GUI) < 0) { OUT("settings: no framebuffer (booted in text mode)\n"); return; }
+    gui_request_app(APP_SETTINGS);
+}
+
+static void cmd_theme(shell_t *sh, int argc, char **argv) {
+    if (argc < 2 || (strcmp(argv[1], "dark") && strcmp(argv[1], "light"))) {
+        OUT("usage: theme dark|light   (current: %s)\n", gui_settings.theme ? "light" : "dark");
+        return;
+    }
+    gui_settings.theme = !strcmp(argv[1], "light");
+    gui_request_settings_apply();
+    OUT("desktop theme set to %s\n", argv[1]);
+}
+
 static void cmd_cli(shell_t *sh, int argc, char **argv) {
     UNUSED(sh); UNUSED(argc); UNUSED(argv);
     display_set_mode(DISPLAY_CLI);
@@ -414,6 +431,8 @@ static const command_t commands[] = {
     { "history",  "",              "show command history",              cmd_history },
     { "gui",      "",              "switch to the graphical desktop",   cmd_gui },
     { "cli",      "",              "switch to the full-screen console", cmd_cli },
+    { "settings", "",              "open desktop settings",             cmd_settings },
+    { "theme",    "dark|light",    "change the desktop theme",          cmd_theme },
     { "exit",     "",              "close this terminal window",        cmd_exit },
     { "reboot",   "",              "restart the computer",              cmd_reboot },
     { "shutdown", "",              "power off (ACPI)",                  cmd_shutdown },

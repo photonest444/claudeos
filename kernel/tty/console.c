@@ -27,9 +27,12 @@ static void draw_cell(termbuf_t *t, int x, int y, bool cursor) {
     if (!use_fb) { vga[y * t->cols + x] = v; return; }
     uint8_t attr = v >> 8;
     uint32_t fg = vga_palette[attr & 15], bg = vga_palette[attr >> 4];
-    gfx_reset_clip();
+    gfx_state_t st;                     /* the GUI task may be drawing elsewhere */
+    gfx_save(&st);
+    gfx_set_target(NULL);
     gfx_char(x * FONT_W, y * FONT_H, (char)(v & 0xFF), fg, bg, false);
     if (cursor) gfx_fill(x * FONT_W, y * FONT_H + FONT_H - 3, FONT_W, 2, fg);
+    gfx_restore(&st);
     gfx_flush(x * FONT_W, y * FONT_H, FONT_W, FONT_H);
 }
 
@@ -55,8 +58,10 @@ static void hook_cursor(termbuf_t *t, int ox, int oy) {
 static void hook_redraw(termbuf_t *t) {
     if (display_mode != DISPLAY_CLI) return;
     if (use_fb) {
-        gfx_reset_clip();
-        gfx_fill(0, 0, gfx_width, gfx_height, 0);
+        gfx_state_t st;
+        gfx_save(&st);
+        gfx_set_target(NULL);
+        gfx_fill(0, 0, gfx_width, gfx_height, vga_palette[0]);
         for (int y = 0; y < t->rows; y++)
             for (int x = 0; x < t->cols; x++) {
                 uint16_t v = t->cells[y * t->cols + x];
@@ -66,6 +71,7 @@ static void hook_redraw(termbuf_t *t) {
         gfx_fill(t->cx * FONT_W, t->cy * FONT_H + FONT_H - 3, FONT_W, 2, vga_palette[t->attr & 15]);
         cur_x = t->cx;
         cur_y = t->cy;
+        gfx_restore(&st);
         gfx_flush_all();
     } else {
         for (int i = 0; i < t->cols * t->rows; i++) vga[i] = t->cells[i];
@@ -75,13 +81,16 @@ static void hook_redraw(termbuf_t *t) {
 static void hook_scroll(termbuf_t *t) {
     if (display_mode != DISPLAY_CLI) return;
     if (!use_fb) { hook_redraw(t); return; }
-    gfx_reset_clip();
+    gfx_state_t st;
+    gfx_save(&st);
+    gfx_set_target(NULL);
     gfx_scroll_region(0, t->rows * FONT_H, FONT_H, vga_palette[t->attr >> 4]);
     for (int x = 0; x < t->cols; x++) {
         uint16_t v = t->cells[(t->rows - 1) * t->cols + x];
         gfx_char(x * FONT_W, (t->rows - 1) * FONT_H, (char)(v & 0xFF),
                  vga_palette[(v >> 8) & 15], vga_palette[v >> 12], false);
     }
+    gfx_restore(&st);
     gfx_flush(0, 0, gfx_width, t->rows * FONT_H);
     /* The drawn cursor moved up one row together with the pixels: erase it. */
     if (cur_x >= 0 && cur_y > 0) draw_cell(t, cur_x, cur_y - 1, false);

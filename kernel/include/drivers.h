@@ -30,6 +30,7 @@ void mouse_init(void);
 int  mouse_poll(mouse_event_t *ev);    /* 1 if an event was dequeued */
 void mouse_set_bounds(int w, int h);
 void mouse_get(int *x, int *y, int *buttons);
+void mouse_set_speed(int percent);    /* pointer acceleration, 100 = normal */
 
 /* CMOS real-time clock. */
 typedef struct { int year, month, day, hour, min, sec; } rtc_time_t;

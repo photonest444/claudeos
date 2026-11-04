@@ -59,7 +59,7 @@ void kmain(uint32_t magic, multiboot_info_t *mbi) {
     pmm_init(mbi);              /* physical frame allocator from the memory map */
     paging_init();              /* identity map 0-1 GiB, enable paging */
 
-    uint32_t heap_pages = MIN(4096u, pmm_free_frames() / 2);    /* up to 16 MiB */
+    uint32_t heap_pages = MIN(12288u, pmm_free_frames() / 2);   /* up to 48 MiB (GUI surfaces) */
     uint32_t heap = pmm_alloc_contiguous(heap_pages);
     if (!heap) panic("cannot allocate kernel heap");
     heap_init(heap, heap_pages * PAGE_SIZE);

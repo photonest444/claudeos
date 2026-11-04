@@ -11,6 +11,7 @@ static uint8_t packet[3];
 static int cycle;
 static volatile int mx, my, mbuttons;
 static int max_x = 1023, max_y = 767;
+static int speed = 100;                     /* percent, set from GUI settings */
 
 static void wait_write(void) { for (int i = 0; i < 100000 && (inb(0x64) & 2); i++) ; }
 static void wait_read(void)  { for (int i = 0; i < 100000 && !(inb(0x64) & 1); i++) ; }
@@ -33,6 +34,7 @@ static void mouse_irq(regs_t *r) {
     if (packet[0] & 0xC0) return;            /* overflow, drop */
     int dx = packet[1] - ((packet[0] & 0x10) ? 256 : 0);
     int dy = packet[2] - ((packet[0] & 0x20) ? 256 : 0);
+    dx = dx * speed / 100; dy = dy * speed / 100;
     mx += dx; my -= dy;                      /* PS/2 Y axis points up */
     if (mx < 0) mx = 0;
     if (my < 0) my = 0;
@@ -73,3 +75,5 @@ int mouse_poll(mouse_event_t *ev) {
 }
 
 void mouse_get(int *x, int *y, int *buttons) { *x = mx; *y = my; *buttons = mbuttons; }
+
+void mouse_set_speed(int percent) { speed = percent < 25 ? 25 : percent > 400 ? 400 : percent; }
