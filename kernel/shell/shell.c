@@ -123,7 +123,8 @@ static void cmd_help(shell_t *sh, int argc, char **argv) {
     OUT("\x1b[93mPrograms in /bin\x1b[0m run by name (e.g. \x1b[96mhello\x1b[0m), "
         "append \x1b[96m&\x1b[0m to run in background.\n"
         "Keys: \x1b[96mF12\x1b[0m CLI<->GUI, \x1b[96mCtrl+C\x1b[0m stop program, "
-        "\x1b[96mUp/Down\x1b[0m history, \x1b[96mCtrl+L\x1b[0m clear.\n");
+        "\x1b[96mUp/Down\x1b[0m history, \x1b[96mCtrl+L\x1b[0m clear.\n"
+        "Commands can be shortened while unambiguous: \x1b[96mhel\x1b[0m = help, \x1b[96mupt\x1b[0m = uptime.\n");
 }
 
 static void cmd_ls(shell_t *sh, int argc, char **argv) {
@@ -388,7 +389,7 @@ static void cmd_exit(shell_t *sh, int argc, char **argv) {
 static void cmd_run(shell_t *sh, int argc, char **argv);
 
 static const command_t commands[] = {
-    { "help",     "",              "show this help",                    cmd_help },
+    { "help",     "",              "show this help (also: h, ?)",       cmd_help },
     { "ls",       "[path]",        "list directory contents",           cmd_ls },
     { "cd",       "[dir]",         "change directory",                  cmd_cd },
     { "pwd",      "",              "print working directory",           cmd_pwd },
@@ -443,14 +444,49 @@ static void cmd_run(shell_t *sh, int argc, char **argv) {
     if (!exec_program(sh, argc - 1, argv + 1)) OUT("run: %s: program not found\n", argv[1]);
 }
 
+/* Short aliases for built-in commands. */
+static const struct { const char *alias, *command; } aliases[] = {
+    { "h",  "help" },
+    { "?",  "help" },
+    { NULL, NULL },
+};
+
+static const command_t *find_command(const char *name) {
+    for (const command_t *c = commands; c->name; c++)
+        if (!strcmp(c->name, name)) return c;
+    return NULL;
+}
+
+/* An unambiguous prefix also works: "hel" -> help, "hist" -> history. */
+static const command_t *find_by_prefix(shell_t *sh, const char *name, bool *ambiguous) {
+    const command_t *found = NULL;
+    size_t len = strlen(name);
+    int matches = 0;
+    *ambiguous = false;
+    for (const command_t *c = commands; c->name; c++)
+        if (!strncmp(c->name, name, len)) { found = c; matches++; }
+    if (matches <= 1) return found;
+    *ambiguous = true;
+    OUT("%s: ambiguous, did you mean:", name);
+    for (const command_t *c = commands; c->name; c++)
+        if (!strncmp(c->name, name, len)) OUT(" %s", c->name);
+    OUT("\n");
+    return NULL;
+}
+
 static void execute(shell_t *sh, char *line) {
     char *argv[MAX_ARGS + 1];
     int argc = tokenize(line, argv);
     if (!argc) return;
-    for (const command_t *c = commands; c->name; c++)
-        if (!strcmp(c->name, argv[0])) { c->fn(sh, argc, argv); return; }
-    if (!exec_program(sh, argc, argv))
-        OUT("%s: command not found (type 'help')\n", argv[0]);
+    const command_t *c = find_command(argv[0]);
+    for (int i = 0; !c && aliases[i].alias; i++)
+        if (!strcmp(aliases[i].alias, argv[0])) c = find_command(aliases[i].command);
+    if (c) { c->fn(sh, argc, argv); return; }
+    if (exec_program(sh, argc, argv)) return;       /* programs in /bin win over prefixes */
+    bool ambiguous;
+    c = find_by_prefix(sh, argv[0], &ambiguous);
+    if (c) c->fn(sh, argc, argv);
+    else if (!ambiguous) OUT("%s: command not found (type 'help' or 'h')\n", argv[0]);
 }
 
 void shell_main(void *arg) {
