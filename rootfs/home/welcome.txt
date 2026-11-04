@@ -1,0 +1,1 @@
+This is your home directory. Files you create here live on the FAT file system.
