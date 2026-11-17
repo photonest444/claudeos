@@ -6,6 +6,7 @@
 #include "../include/string.h"
 #include "../include/drivers.h"
 #include "../include/kprintf.h"
+#include "../include/clipboard.h"
 
 void tty_init(tty_t *t, termbuf_t *tb) {
     memset(t, 0, sizeof(*t));
@@ -24,6 +25,17 @@ void tty_input(tty_t *t, int key) {
     uint32_t next = (t->in_head + 1) % TTY_INBUF;
     if (next != t->in_tail) { t->inbuf[t->in_head] = key; t->in_head = next; }
     irq_restore(f);
+}
+
+void tty_paste(tty_t *t) {
+    static char buf[TTY_INBUF];               /* the input queue cannot hold more */
+    int n = clipboard_get(buf, TTY_INBUF - 8);
+    for (int i = 0; i < n; i++) {
+        char c = buf[i];
+        if (c == '\r') continue;
+        if (c == '\t') c = ' ';
+        if (c == '\n' || (c >= 32 && c < 127)) tty_input(t, c);
+    }
 }
 
 int tty_trygetkey(tty_t *t) {

@@ -20,6 +20,7 @@ extern tty_t *console_tty;
 
 void tty_init(tty_t *t, termbuf_t *tb);
 void tty_input(tty_t *t, int key);          /* called from IRQ/GUI context */
+void tty_paste(tty_t *t);                   /* type the clipboard into the tty */
 int  tty_getkey(tty_t *t);                  /* blocking, -1 on hangup */
 int  tty_trygetkey(tty_t *t);               /* non-blocking, -1 if empty */
 void tty_write(tty_t *t, const char *s, size_t n);

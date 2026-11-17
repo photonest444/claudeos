@@ -44,11 +44,13 @@ void gfx_shadow(int x, int y, int w, int h, int r, int size, int alpha);
 void gfx_gradient_v(int x, int y, int w, int h, uint32_t top, uint32_t bottom);
 uint32_t gfx_mix(uint32_t a, uint32_t b, int t);          /* t: 0 = a .. 255 = b */
 
-/* Text (8x16 font). */
+/* Text (8x16 font, UTF-8: ASCII, Cyrillic and a few symbols). */
 void gfx_char(int x, int y, char ch, uint32_t fg, uint32_t bg, bool transparent);
 void gfx_text(int x, int y, const char *s, uint32_t fg);
 void gfx_text_bold(int x, int y, const char *s, uint32_t fg);
 void gfx_text_scaled(int x, int y, const char *s, uint32_t fg, int scale);
+int  gfx_text_width(const char *s);            /* UTF-8 aware, in pixels */
+int  gfx_utf8_next(const char **s);            /* decode one UTF-8 character */
 
 /* Surfaces -> current target. */
 void gfx_blit(surface_t *s, int x, int y, int alpha);

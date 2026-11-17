@@ -17,7 +17,11 @@ enum { W_LABEL, W_BUTTON, W_TEXTBOX, W_TOGGLE, W_SLIDER, W_CHOICE, W_SWATCH };
 enum { S_NORMAL, S_DIM, S_ACCENT, S_PRIMARY, S_HEADING, S_DANGER, S_BIG, S_WALLPAPER };
 
 /* Applications (desktop icons, launcher, taskbar icons). */
-enum { APP_TERMINAL, APP_FILES, APP_CALC, APP_MONITOR, APP_WIDGETS, APP_SETTINGS, APP_ABOUT, APP_COUNT };
+enum { APP_TERMINAL, APP_FILES, APP_NOTES, APP_CALC, APP_MONITOR, APP_WIDGETS, APP_SNAKE,
+       APP_SETTINGS, APP_ABOUT, APP_COUNT };
+
+/* Mouse events delivered to window->on_mouse. */
+enum { MOUSE_DOWN, MOUSE_DRAG, MOUSE_UP };
 
 struct window;
 typedef struct widget {
@@ -26,6 +30,8 @@ typedef struct widget {
     char text[96];              /* label/button text; W_CHOICE: "A|B|C" */
     char placeholder[40];       /* W_TEXTBOX hint shown while empty */
     int  cursor;                /* W_TEXTBOX caret */
+    bool sel_on;                /* W_TEXTBOX selection between sel and cursor */
+    int  sel;
     bool pressed;
     int  value, min, max;       /* toggle 0/1, slider range, choice index, swatch selected */
     int  anim;                  /* animated state 0..1000 (toggle knob, choice highlight) */
@@ -39,7 +45,8 @@ typedef struct widget {
 typedef struct window {
     bool used, minimized, closing;
     int  x, y, w, h;            /* outer frame, title bar included */
-    char title[48];
+    char title[48];             /* may contain %d, filled from title_num */
+    int  title_num;
     int  app;                   /* APP_* for the icon */
     widget_t *widgets[MAX_WIDGETS];
     int  nwidgets;
@@ -51,7 +58,8 @@ typedef struct window {
     void (*on_key)(struct window *w, int key);
     void (*on_close)(struct window *w);
     void (*on_tick)(struct window *w);                 /* every GUI loop (~15 ms) */
-    void (*on_mouse)(struct window *w, int x, int y);  /* click in client area */
+    void (*on_mouse)(struct window *w, int x, int y, int ev);  /* MOUSE_DOWN/DRAG/UP in client */
+    void (*on_context)(struct window *w, int x, int y);        /* right click in client */
     void *data;
     bool free_data;             /* kfree(data) when the window closes */
 } window_t;
@@ -72,6 +80,7 @@ typedef struct {
     bool translucent;           /* see-through taskbar and menus */
     bool seconds;               /* clock shows seconds */
     int  mouse_speed;           /* percent */
+    int  lang;                  /* 0 English, 1 Russian */
 } gui_settings_t;
 
 #define NUM_ACCENTS    6
@@ -80,6 +89,18 @@ extern gui_settings_t gui_settings;
 extern const uint32_t accent_colors[NUM_ACCENTS];
 extern const char *const accent_names[NUM_ACCENTS];
 extern const char *const wallpaper_names[NUM_WALLPAPERS];
+
+/* Context menus: label NULL = separator. Shown at the mouse position. */
+typedef struct {
+    const char *label;
+    void (*fn)(struct window *w, struct widget *wd);
+    bool disabled;
+} gui_menu_item_t;
+#define GUI_MENU_MAX 10
+void gui_show_menu(const gui_menu_item_t *items, int n, window_t *w, widget_t *wd);
+
+/* Translation of UI strings (English source text -> current language). */
+const char *T(const char *en);
 
 const theme_t *gui_theme(void);
 uint32_t gui_accent(void);
@@ -107,6 +128,9 @@ void      gui_draw_logo(int cx, int cy, int r, uint32_t color);
 /* Built-in applications (gui/apps.c). */
 void app_terminal(void);
 void app_files(void);
+void app_notes(void);
+void app_notes_open(const char *path);
+void app_snake(void);
 void app_calculator(void);
 void app_sysmon(void);
 void app_widgets_demo(void);

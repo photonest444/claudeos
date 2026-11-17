@@ -20,7 +20,14 @@ enum {
     KEY_PGUP, KEY_PGDN, KEY_INSERT, KEY_DELETE,
     KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6,
     KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12,
+    KEY_ALT_TAB, KEY_SUPER,
 };
+#define KEY_SHIFT 0x10000                 /* OR-ed onto navigation keys while Shift is held */
+#define KEY_CTRL_A 1                      /* Ctrl+letter arrives as the ASCII control code */
+#define KEY_CTRL_C 3
+#define KEY_CTRL_S 19
+#define KEY_CTRL_V 22
+#define KEY_CTRL_X 24
 void keyboard_init(void);
 void keyboard_route(int key);          /* send a key to the active display (CLI/GUI) */
 

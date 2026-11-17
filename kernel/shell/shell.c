@@ -10,11 +10,12 @@
 #include "../include/kprintf.h"
 #include "../include/gfx.h"
 #include "../include/gui.h"
+#include "../include/clipboard.h"
 
 #define LINE_MAX  256
 #define MAX_ARGS  16
 #define HIST_MAX  16
-#define OS_VERSION "ClaudeOS 1.1 (i386)"
+#define OS_VERSION "ClaudeOS 1.2 (i386)"
 
 typedef struct {
     tty_t *tty;
@@ -124,7 +125,7 @@ static void cmd_help(shell_t *sh, int argc, char **argv) {
     OUT("\x1b[93mPrograms in /bin\x1b[0m run by name (e.g. \x1b[96mhello\x1b[0m), "
         "append \x1b[96m&\x1b[0m to run in background.\n"
         "Keys: \x1b[96mF12\x1b[0m CLI<->GUI, \x1b[96mCtrl+C\x1b[0m stop program, "
-        "\x1b[96mUp/Down\x1b[0m history, \x1b[96mCtrl+L\x1b[0m clear.\n"
+        "\x1b[96mUp/Down\x1b[0m history, \x1b[96mCtrl+L\x1b[0m clear, \x1b[96mCtrl+V\x1b[0m paste.\n"
         "Commands can be shortened while unambiguous: \x1b[96mhel\x1b[0m = help, \x1b[96mupt\x1b[0m = uptime.\n");
 }
 
@@ -332,6 +333,42 @@ static void cmd_gui(shell_t *sh, int argc, char **argv) {
     if (display_set_mode(DISPLAY_GUI) < 0) OUT("gui: no framebuffer (booted in text mode)\n");
 }
 
+/* clip: show / set the clipboard, or move it to and from files. */
+static void cmd_clip(shell_t *sh, int argc, char **argv) {
+    char *buf = kmalloc(CLIPBOARD_MAX);
+    if (!buf) return;
+    char path[128];
+    if (argc == 1) {
+        int n = clipboard_get(buf, CLIPBOARD_MAX);
+        if (!n) OUT("(clipboard is empty - copy text in the GUI, or: clip <text>)\n");
+        else { tty_write(sh->tty, buf, n); if (buf[n - 1] != '\n') OUT("\n"); }
+    } else if (!strcmp(argv[1], "-c")) {
+        clipboard_set("", 0);
+        OUT("clipboard cleared\n");
+    } else if ((!strcmp(argv[1], "-f") || !strcmp(argv[1], "-w")) && argc == 3) {
+        abspath(sh, argv[2], path);
+        int r;
+        if (argv[1][1] == 'f') {
+            r = fs_read(path, 0, buf, CLIPBOARD_MAX - 1);
+            if (r >= 0) { clipboard_set(buf, r); OUT("copied %d bytes from %s\n", r, path); }
+        } else {
+            int n = clipboard_get(buf, CLIPBOARD_MAX);
+            r = fs_write(path, buf, n, false);
+            if (r >= 0) OUT("wrote %d bytes to %s\n", n, path);
+        }
+        if (r < 0) err(sh, "clip", argv[2], r);
+    } else {
+        buf[0] = 0;
+        for (int i = 1; i < argc; i++) {
+            if (i > 1) strlcat(buf, " ", CLIPBOARD_MAX);
+            strlcat(buf, argv[i], CLIPBOARD_MAX);
+        }
+        clipboard_set(buf, strlen(buf));
+        OUT("copied to clipboard - paste with Ctrl+V\n");
+    }
+    kfree(buf);
+}
+
 static void cmd_settings(shell_t *sh, int argc, char **argv) {
     UNUSED(argc); UNUSED(argv);
     if (display_set_mode(DISPLAY_GUI) < 0) { OUT("settings: no framebuffer (booted in text mode)\n"); return; }
@@ -431,6 +468,7 @@ static const command_t commands[] = {
     { "history",  "",              "show command history",              cmd_history },
     { "gui",      "",              "switch to the graphical desktop",   cmd_gui },
     { "cli",      "",              "switch to the full-screen console", cmd_cli },
+    { "clip",     "[text|-f f|-w f]", "show/set clipboard, file <-> clip", cmd_clip },
     { "settings", "",              "open desktop settings",             cmd_settings },
     { "theme",    "dark|light",    "change the desktop theme",          cmd_theme },
     { "exit",     "",              "close this terminal window",        cmd_exit },

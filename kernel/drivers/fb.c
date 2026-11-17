@@ -11,7 +11,9 @@
 #include "../include/string.h"
 #include "../include/kprintf.h"
 
-extern const uint8_t font8x16[128][16];
+extern const uint8_t font8x16[][16];
+extern const int font_glyph_count;
+extern const uint16_t font_extra_cp[];
 
 #define OPAQUE 0xFF000000u
 
@@ -266,9 +268,35 @@ void gfx_gradient_v(int x, int y, int w, int h, uint32_t top, uint32_t bottom) {
 }
 
 /* ---- text ------------------------------------------------------------- */
-void gfx_char(int x, int y, char ch, uint32_t fg, uint32_t bg, bool transparent) {
-    uint8_t c = (uint8_t)ch;
-    const uint8_t *g = font8x16[c < 128 ? c : '?'];
+/* Decode one UTF-8 character and advance *s. Invalid bytes become '?'. */
+int gfx_utf8_next(const char **s) {
+    const uint8_t *p = (const uint8_t *)*s;
+    int c = *p++;
+    if (c >= 0xC0 && c < 0xE0 && (p[0] & 0xC0) == 0x80) {
+        c = ((c & 0x1F) << 6) | (p[0] & 0x3F);
+        p++;
+    } else if (c >= 0xE0 && c < 0xF0 && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80) {
+        c = ((c & 0x0F) << 12) | ((p[0] & 0x3F) << 6) | (p[1] & 0x3F);
+        p += 2;
+    } else if (c >= 0x80) c = '?';
+    *s = (const char *)p;
+    return c;
+}
+
+int gfx_text_width(const char *s) {
+    int n = 0;
+    while (*s) { gfx_utf8_next(&s); n++; }
+    return n * FONT_W;
+}
+
+static const uint8_t *glyph(int cp) {
+    if (cp >= 0 && cp < 128) return font8x16[cp];
+    for (int i = 0; i < font_glyph_count - 128; i++)
+        if (font_extra_cp[i] == cp) return font8x16[128 + i];
+    return font8x16['?'];
+}
+
+static void draw_glyph(int x, int y, const uint8_t *g, uint32_t fg, uint32_t bg, bool transparent) {
     fg |= OPAQUE; bg |= OPAQUE;
     if (x >= clip_x0 && y >= clip_y0 && x + FONT_W <= clip_x1 && y + FONT_H <= clip_y1) {
         for (int r = 0; r < FONT_H; r++) {      /* fast path: fully visible */
@@ -288,8 +316,16 @@ void gfx_char(int x, int y, char ch, uint32_t fg, uint32_t bg, bool transparent)
         }
 }
 
+void gfx_char(int x, int y, char ch, uint32_t fg, uint32_t bg, bool transparent) {
+    uint8_t c = (uint8_t)ch;
+    draw_glyph(x, y, glyph(c < 128 ? c : '?'), fg, bg, transparent);
+}
+
 void gfx_text(int x, int y, const char *s, uint32_t fg) {
-    for (; *s; s++, x += FONT_W) gfx_char(x, y, *s, fg, 0, true);
+    while (*s) {
+        draw_glyph(x, y, glyph(gfx_utf8_next(&s)), fg, 0, true);
+        x += FONT_W;
+    }
 }
 
 void gfx_text_bold(int x, int y, const char *s, uint32_t fg) {
@@ -298,12 +334,12 @@ void gfx_text_bold(int x, int y, const char *s, uint32_t fg) {
 }
 
 void gfx_text_scaled(int x, int y, const char *s, uint32_t fg, int scale) {
-    for (; *s; s++, x += FONT_W * scale) {
-        uint8_t c = (uint8_t)*s;
-        const uint8_t *g = font8x16[c < 128 ? c : '?'];
+    while (*s) {
+        const uint8_t *g = glyph(gfx_utf8_next(&s));
         for (int r = 0; r < FONT_H; r++)
             for (int b = 0; b < FONT_W; b++)
                 if (g[r] & (0x80 >> b)) gfx_fill(x + b * scale, y + r * scale, scale, scale, fg);
+        x += FONT_W * scale;
     }
 }
 

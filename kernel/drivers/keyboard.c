@@ -6,6 +6,7 @@
 #include "../include/arch.h"
 #include "../include/tty.h"
 #include "../include/gui.h"
+#include "../include/clipboard.h"
 
 static const char map_normal[128] = {
     0, 27, '1','2','3','4','5','6','7','8','9','0','-','=','\b',
@@ -25,8 +26,10 @@ static const char map_shift[128] = {
 static bool shift, ctrl, alt, caps, e0;
 
 void keyboard_route(int key) {
-    if (display_mode == DISPLAY_GUI) gui_post_key(key);
-    else if (console_tty) tty_input(console_tty, key);
+    if (display_mode == DISPLAY_GUI) { gui_post_key(key); return; }
+    if (!console_tty || key == KEY_ALT_TAB || key == KEY_SUPER) return;
+    if (key == KEY_CTRL_V) tty_paste(console_tty);       /* paste into the CLI */
+    else tty_input(console_tty, key & ~KEY_SHIFT);
 }
 
 static void handle_scancode(uint8_t sc) {
@@ -54,8 +57,10 @@ static void handle_scancode(uint8_t sc) {
         case 0x52: key = KEY_INSERT; break; case 0x53: key = KEY_DELETE; break;
         case 0x1C: key = '\n'; break;       /* keypad enter */
         case 0x35: key = '/'; break;
+        case 0x5B: case 0x5C: key = KEY_SUPER; break;   /* Windows/Super key */
         default: return;
         }
+        if (shift && key >= KEY_UP && key <= KEY_DELETE) key |= KEY_SHIFT;
     } else if (code >= 0x3B && code <= 0x44) {
         key = KEY_F1 + (code - 0x3B);
     } else if (code == 0x57) {
@@ -73,6 +78,7 @@ static void handle_scancode(uint8_t sc) {
     }
 
     if (ctrl && alt && key == KEY_DELETE) power_reboot();
+    if (alt && key == '\t') key = KEY_ALT_TAB;
     if (key == KEY_F12) { display_toggle(); return; }
     keyboard_route(key);
 }
